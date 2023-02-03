@@ -1,0 +1,41 @@
+RTX 3090 - Pipeline not para on angles
+Split: 1.184800 ms
+Debayer: 10.218688 ms
+RGB to Mono: 0.932800 ms
+Stokes: 0.346464 ms
+Dolp: 0.590912 ms
+Aolp: 0.561632 ms
+False coloring: 0.678112 ms
+
+RTX 3090 - Pipeline para on angles
+lmichals@shire:~/local_storage/leon/test$ ./Pipeline
+Split: 1.141088 ms
+Debayer + RGB to Mono: 10.728832 ms
+Stokes: 0.365760 ms
+Dolp: 0.467040 ms
+Aolp: 0.506880 ms
+False coloring: 1.209056 ms
+lmichals@shire:~/local_storage/leon/test$ ./Pipeline
+Split: 1.168000 ms
+Debayer + RGB to Mono: 11.177248 ms
+Stokes: 0.373696 ms
+Dolp: 0.444384 ms
+Aolp: 0.517888 ms
+False coloring: 1.025280 ms
+lmichals@shire:~/local_storage/leon/test$ ./Pipeline
+Split: 1.163072 ms
+Debayer + RGB to Mono: 10.784032 ms
+Stokes: 0.369088 ms
+Dolp: 0.434880 ms
+Aolp: 0.510976 ms
+False coloring: 0.897664 ms
+lmichals@shire:~/local_storage/leon/test$
+
+
+RTX 3090 - Pipeline para on angles + aolp & dolp
+lmichals@shire:~/local_storage/leon/test$ ./Pipeline
+Split: 1.149632 ms
+Debayer + RGB to Mono: 10.967808 ms
+Stokes: 0.360992 ms
+dolp + aolp: 0.873216 ms
+False coloring: 0.795520 ms

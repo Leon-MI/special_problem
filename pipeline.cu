@@ -51,15 +51,6 @@ __global__ void my_split(const cuda::PtrStepSzb dev_img, cuda::PtrStepSzb bggr0,
     }
 }
 
-void demosaicing(const GpuMat& input, const GpuMat& output) {
-    cuda::cvtColor(input, output, COLOR_BayerBG2BGR);
-    CHECK_LAST_CUDA_ERROR();
-}
-
-void rgb2mono(const GpuMat& input, const GpuMat& output) {
-    cuda::cvtColor(input, output, COLOR_BGR2GRAY);
-    CHECK_LAST_CUDA_ERROR();
-}
 
 __global__ void compute_stokes(
     const cuda::PtrStepSzb mono0,
@@ -192,7 +183,6 @@ int main()
     dim3 blocks(64, 77);
     dim3 threads(32, 32);
     my_split<<<blocks, threads>>>(dev_img, dev_bggr0, dev_bggr45, dev_bggr90, dev_bggr135);
-    CHECK_LAST_CUDA_ERROR();
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&elapsedTime, start, stop);
@@ -207,35 +197,36 @@ int main()
     dev_bggr135.download(bggr);
     save_img("bggr135", bggr);
 
-    // Debayer
+    // Debayer + TGB to Mono
     cudaEventRecord(start, 0);
     GpuMat dev_rgb0(ROWS2, COLS2, CV_8UC3);
     GpuMat dev_rgb45(ROWS2, COLS2, CV_8UC3);
     GpuMat dev_rgb90(ROWS2, COLS2, CV_8UC3);
     GpuMat dev_rgb135(ROWS2, COLS2, CV_8UC3);
-    demosaicing(dev_bggr0, dev_rgb0);
-    demosaicing(dev_bggr45, dev_rgb45);
-    demosaicing(dev_bggr90, dev_rgb90);
-    demosaicing(dev_bggr135, dev_rgb135);
-    cudaEventRecord(stop, 0);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&elapsedTime, start, stop);
-    printf("Debayer: %f ms\n", elapsedTime);
-
-    // RGB to MONO
-    cudaEventRecord(start, 0);
     GpuMat dev_mono0(ROWS2, COLS2, CV_8UC1);
     GpuMat dev_mono45(ROWS2, COLS2, CV_8UC1);
     GpuMat dev_mono90(ROWS2, COLS2, CV_8UC1);
     GpuMat dev_mono135(ROWS2, COLS2, CV_8UC1);
-    rgb2mono(dev_rgb0, dev_mono0);
-    rgb2mono(dev_rgb45, dev_mono45);
-    rgb2mono(dev_rgb90, dev_mono90);
-    rgb2mono(dev_rgb135, dev_mono135);
+    
+    cuda::Stream s0, s45, s90, s135;
+    cuda::cvtColor(dev_bggr0, dev_rgb0, COLOR_BayerBG2BGR, 0, s0);
+    cuda::cvtColor(dev_bggr45, dev_rgb45, COLOR_BayerBG2BGR, 0, s45);
+    cuda::cvtColor(dev_bggr90, dev_rgb90, COLOR_BayerBG2BGR, 0, s90);
+    cuda::cvtColor(dev_bggr135, dev_rgb135, COLOR_BayerBG2BGR, 0, s135);
+
+    cuda::cvtColor(dev_rgb0, dev_mono0, COLOR_BGR2GRAY, 0, s0);
+    cuda::cvtColor(dev_rgb45, dev_mono45, COLOR_BGR2GRAY, 0, s45);
+    cuda::cvtColor(dev_rgb90, dev_mono90, COLOR_BGR2GRAY, 0, s90);
+    cuda::cvtColor(dev_rgb135, dev_mono135, COLOR_BGR2GRAY, 0, s135);
+
+    s0.waitForCompletion();
+    s45.waitForCompletion();
+    s90.waitForCompletion();
+    s135.waitForCompletion();
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&elapsedTime, start, stop);
-    printf("RGB to Mono: %f ms\n", elapsedTime);
+    printf("Debayer + RGB to Mono: %f ms\n", elapsedTime);
     Mat mono;
     dev_mono0.download(mono);
     save_img("mono0", mono);
@@ -254,7 +245,7 @@ int main()
     int sdev_stokes = std::ceil((float)dev_stokes.step / sizeof(short3));
     compute_stokes<<<blocks, threads>>>(dev_mono0, dev_mono45, dev_mono90,
         dev_mono135, reinterpret_cast<short3*>(dev_stokes.data), sdev_stokes);
-    CHECK_LAST_CUDA_ERROR();
+    // CHECK_LAST_CUDA_ERROR();
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&elapsedTime, start, stop);
@@ -264,35 +255,30 @@ int main()
     save_img("stokes", stokes);
     save_text("stokes", stokes);
 
-    // Dolp
+    // Dolp + Aolp
     cudaEventRecord(start, 0);
-    GpuMat dev_dolp(ROWS2, COLS2, CV_64FC1);
-    compute_dolp<<<blocks, threads>>>(reinterpret_cast<short3*>(dev_stokes.data), sdev_stokes, dev_dolp);
+    cudaStream_t sdolp; 
+    cudaStreamCreate(&sdolp);
     CHECK_LAST_CUDA_ERROR();
-    cudaEventRecord(stop, 0);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&elapsedTime, start, stop);
-    printf("Dolp: %f ms\n", elapsedTime);
-    Mat dolp;
-    dev_dolp.download(dolp);
-    normalize(dolp,  dolp, 0, 255, NORM_MINMAX);
-    save_img("dolp", dolp);
-    save_text("dolp", dolp);
+    GpuMat dev_dolp(ROWS2, COLS2, CV_64FC1);
+    compute_dolp<<<blocks, threads, 0, sdolp>>>(reinterpret_cast<short3*>(dev_stokes.data), sdev_stokes, dev_dolp);
+
 
     // Aolp
-    cudaEventRecord(start, 0);
+    cudaStream_t saolp; 
+    cudaStreamCreate(&saolp);
     GpuMat dev_aolp(ROWS2, COLS2, CV_64FC1);
-    compute_aolp<<<blocks, threads>>>(reinterpret_cast<short3*>(dev_stokes.data), sdev_stokes, dev_aolp);
+    compute_aolp<<<blocks, threads, 0, saolp>>>(reinterpret_cast<short3*>(dev_stokes.data), sdev_stokes, dev_aolp);
     CHECK_LAST_CUDA_ERROR();
+
+    cudaStreamDestroy(sdolp);
+    cudaStreamDestroy(saolp);
+
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&elapsedTime, start, stop);
-    printf("Aolp: %f ms\n", elapsedTime);
-    Mat aolp;
-    dev_aolp.download(aolp);
-    normalize(aolp,  aolp, 0, 255, NORM_MINMAX);
-    save_img("aolp", aolp);
-    save_text("aolp", aolp);
+    printf("dolp + aolp: %f ms\n", elapsedTime);
+
 
     // False coloring
     cudaEventRecord(start, 0);
@@ -303,9 +289,9 @@ int main()
     false_coloring<<<blocks, threads>>>(dev_aolp, dev_dolp,
         reinterpret_cast<unsigned char*>(dev_hsv.data), sdev_hsv
     );
-    CHECK_LAST_CUDA_ERROR();
+    // CHECK_LAST_CUDA_ERROR();
     cuda::cvtColor(dev_hsv, dev_colored, COLOR_HSV2RGB);
-    CHECK_LAST_CUDA_ERROR();
+    // CHECK_LAST_CUDA_ERROR();
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&elapsedTime, start, stop);
