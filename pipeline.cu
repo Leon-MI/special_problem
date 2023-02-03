@@ -171,7 +171,7 @@ int main()
     // Read and upload img to gpu
     Mat img_raw = imread("images/frame00000_raw.png", IMREAD_GRAYSCALE);
     // Mat img_raw = (Mat_<unsigned char>(4,4) << 90, 45, 90, 45, 135, 1, 135, 1, 90, 45, 90, 45, 135, 1, 135, 1);
-    std::cout << "Raw img rows: " << img_raw.rows << "cols: " << img_raw.cols << " type=" << img_raw.type() << std::endl;
+    // std::cout << "Raw img rows: " << img_raw.rows << " cols: " << img_raw.cols << " type=" << img_raw.type() << std::endl;
     
     GpuMat dev_img;
     dev_img.upload(img_raw);
