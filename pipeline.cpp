@@ -63,8 +63,8 @@ void compute_aolp(const Mat& stokes, Mat& output) {
                 output.at<double>(i, j) = 0;
             } else {
                 short s1 = stokes.at<cv::Vec3s>(i, j)[1];
-                double div = (double)s1 / s2;
-                output.at<double>(i, j) = (double)1/2 * std::atan(div);
+                double angle = (double)1/2 * std::atan2(s1, s2);
+                output.at<double>(i, j) = angle + CV_PI/2;
             }
         }
     }
