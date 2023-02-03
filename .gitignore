@@ -19,3 +19,6 @@ CTestTestfile.cmake
 _deps
 build
 Pipeline
+
+# VsCode
+.vscode/
