@@ -18,7 +18,7 @@ using namespace cv::cuda;
 #define ROWS2 1024
 #define COLS2 1224
 
-
+#define ALLOC_TYPE AllocType::unified
 
 #define CHECK_LAST_CUDA_ERROR() checkLast(__FILE__, __LINE__)
 void checkLast(const char* const file, const int line)
@@ -59,116 +59,86 @@ __global__ void compute_stokes(
     const cuda::PtrStepSzb mono45,
     const cuda::PtrStepSzb mono90,
     const cuda::PtrStepSzb mono135,
-    short3 * output,
-    int oStep
+    cuda::PtrStep<int3>  output
     ) {
-    // https://stackoverflow.com/questions/46389154/gpumat-accessing-2-channel-float-data-in-custom-kernel
-    int i = threadIdx.x + blockIdx.x * blockDim.x;
-    int j = threadIdx.y + blockIdx.y * blockDim.y;
+    const int i = threadIdx.x + blockIdx.x * blockDim.x;
+    const int j = threadIdx.y + blockIdx.y * blockDim.y;
 
-    if (i >= ROWS2 || j >= COLS2)
+    if (i > (ROWS2-1) || j > (COLS2-1))
         return;
-    /* Compute linear index from 3D indices */
-    const int tidOut = i * oStep + j;
 
     const unsigned char m0 = mono0(i, j);
     const unsigned char m90 = mono90(i, j);
     
-    output[tidOut].x = m0 + m90;
-    output[tidOut].y = m0 - m90;
-    output[tidOut].z = mono45(i, j) - mono135(i, j);
+    output(i, j).x = (int)(m0 + m90);
+    output(i, j).y = (int)(m0 - m90);
+    output(i, j).z = (int)(mono45(i, j) - mono135(i, j));
 }
 
-__global__ void compute_dolp(const short3 * stokes, int iStep, cuda::PtrStepSz<double> output) {
+__global__ void compute_dolp(const cuda::PtrStep<int3> stokes, cuda::PtrStepSz<float> output) {
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     int j = threadIdx.y + blockIdx.y * blockDim.y;
 
-    if (i >= ROWS2 || j >= COLS2)
+    if (i > (ROWS2-1) || j > (COLS2-1))
         return;
-    /* Compute linear index from 3D indices */
-    const int tidIn = i * iStep + j;
     
-    const short3 s = stokes[tidIn];
-    if (s.x == (short) 0)
+    const int3 s = stokes(i, j);
+    if (s.x == 0)
         output(i, j) = 0;
     else
-        output(i, j) = sqrt((double)((s.y*s.y) + (s.z*s.z))) / s.x;
+        output(i, j) = sqrtf((s.y*s.y) + (s.z*s.z)) / s.x;
 }
 
 
-__global__ void compute_aolp(const short3 * stokes, int iStep, cuda::PtrStepSz<double> output) {
+__global__ void compute_aolp(const cuda::PtrStep<int3> stokes, cuda::PtrStepSz<float> output) {
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     int j = threadIdx.y + blockIdx.y * blockDim.y;
 
-    if (i >= ROWS2 || j >= COLS2)
+    if (i > (ROWS2-1) || j > (COLS2-1))
         return;
-    /* Compute linear index from 3D indices */
-    const int tidIn = i * iStep + j;
-    
-    const short3 s = stokes[tidIn];
-    if (s.z == (short)0) {
+
+    const int3 s = stokes(i, j);
+    if (s.z == (int)0) {
         output(i, j) = 0.0;
     } else {
-        const double sy= (double)s.y;
-        const double sz = (double)s.z;
-        const double angle = (double)1/2 * atan2(sy, sz);
-        output(i, j) = angle + (double)CV_PI/2;
+        const float sy = (float)s.y;
+        const float sz = (float)s.z;
+        const float angle = ((float)1/2) * atan2f(sy, sz);
+        output(i, j) = angle + (float)CV_PI/2;
     }
 }
 
-__global__ void false_coloring(const cuda::PtrStepSz<double> aolp, cuda::PtrStepSz<double> dolp, unsigned char* output, int oStep) {
+__global__ void false_coloring(const cuda::PtrStepSz<float> aolp, cuda::PtrStepSz<float> dolp, cuda::PtrStep<uchar3> output) {
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     int j = threadIdx.y + blockIdx.y * blockDim.y;
 
-    if (i >= ROWS2 || j >= COLS2)
+    if (i > (ROWS2-1) || j > (COLS2-1))
         return;
-    /* Compute linear index from 3D indices */
-    const int tidOut = i*oStep + 3*j;
 
-    const double a = aolp(i, j);
-    const double d = dolp(i, j) * 255;
+    const float a = aolp(i, j);
+    const float d = dolp(i, j) * 255;
 
-    output[tidOut] = (unsigned char) (179 * fmod(a, CV_PI) / CV_PI);
-    output[tidOut + 1] = (unsigned char) 255;
-    output[tidOut + 2] = (unsigned char) min(max((double)0, d), (double)255);
-}
-
-void save_img(const char * name, const Mat & M) {
-    std::string out_name = name;
-    out_name = "images/" + out_name + ".png";
-    std::vector<int> compression_params;
-    compression_params.push_back(IMWRITE_PNG_COMPRESSION);
-    compression_params.push_back(9);
-    imwrite(out_name, M, compression_params);
-}
-
-void save_text(const char * name, const Mat & M) {
-    std::string out_name = name;
-    out_name = "images/" + out_name + ".txt";
-    std::ofstream myfile (out_name);
-    cv::Ptr<cv::Formatter> formatMat=Formatter::get(cv::Formatter::FMT_DEFAULT);
-    formatMat->set64fPrecision(3);
-    formatMat->set32fPrecision(3);
-
-    if (myfile.is_open())
-    {
-        myfile << formatMat->format(M);
-        myfile.close();
-    }
-    else std::cout << "Unable to open file";
+    output(i, j).x = (unsigned char) (179 * fmodf(a, CV_PI) / CV_PI);
+    output(i, j).y = (unsigned char) 255;
+    output(i, j).z = (unsigned char) min(max((double)0, d), (double)255);
 }
 
 
-
-inline size_t imageFormatSize(size_t width, size_t height,  int format)
+inline size_t imageFormatSize(size_t width, size_t height, int format)
 {
-    size_t depth = sizeof(uchar3) * 8;
+    size_t s = sizeof(uchar3);
     if (format == CV_8UC1)
-        depth = sizeof(uchar3);
-    // else if (format == CV_16SC3)
-    // std::cout << "sizeof : " << depth  << " Format: " << depth << std::endl;
+        s = sizeof(uchar1);
+    else if (format == CV_32FC3)
+        s = sizeof(float3);
+    else if (format == CV_32FC1)
+        s = sizeof(float);
+    else if (format == CV_64FC1)
+        s = sizeof(double);
+    else if (format == CV_32SC3)
+        s = sizeof(int3);
 
-	return (width * height * depth) / 8;
+	return width * height * s;
 }
 
 enum AllocType {
@@ -181,6 +151,7 @@ enum AllocType {
 class MMat {
     private:
         AllocType alloc_type;
+        cuda::HostMem hostMem;
     public:
         Mat cpuMat;
         GpuMat gpuMat;
@@ -190,7 +161,7 @@ class MMat {
             if (alloc_type == AllocType::splitted) {
                 gpuMat = GpuMat(rows, cols, img_type);
             } else if (alloc_type == AllocType::shared) {
-                cuda::HostMem hostMem (rows, cols, img_type, cuda::HostMem::SHARED );
+                hostMem = cuda::HostMem(rows, cols, img_type, cuda::HostMem::SHARED );
                 CHECK_LAST_CUDA_ERROR();
                 cpuMat = hostMem.createMatHeader();
                 gpuMat = hostMem.createGpuMatHeader();
@@ -237,6 +208,11 @@ class MMat {
                 gpuMat.download(cpuMat);
         }
 
+        void download(cuda::Stream & s) {
+            if (alloc_type == AllocType::splitted)
+                gpuMat.download(cpuMat, s);
+        }
+
         void save_img(const char * name) {
             download();
             std::string out_name = name;
@@ -246,13 +222,20 @@ class MMat {
             compression_params.push_back(9);
             imwrite(out_name, cpuMat, compression_params);
         }
+
+        MMat(const MMat&) = delete;
+        // "copy assignment operator"
+        MMat& operator= (const MMat&) = delete;  //  MMat p6; p6 = p1;
+        // "move constructor"
+        MMat(MMat&&) = delete;                   //  MMat p7{ std::move(p2) };
+        // "move assignment operator"
+        MMat& operator= (MMat&&) = delete;  
 };
 
 
 
-
 void benchmark_indiv(const GpuMat & dev_img_raw) {
-    const int n = 50;
+    const int n = 1;
     float t_upload = 0.0f;
     float t_split = 0.0f;
     float t_debayer_mono = 0.0f;
@@ -264,32 +247,29 @@ void benchmark_indiv(const GpuMat & dev_img_raw) {
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
 
-    MMat bggr0 (ROWS2, COLS2, dev_img_raw.type(), AllocType::splitted );
-    MMat bggr45 (ROWS2, COLS2, dev_img_raw.type(), AllocType::splitted );
-    MMat bggr90 (ROWS2, COLS2, dev_img_raw.type(), AllocType::splitted );
-    MMat bggr135 (ROWS2, COLS2, dev_img_raw.type(), AllocType::splitted );
-    
-    MMat rgb0 (ROWS2, COLS2, CV_8UC3, AllocType::splitted);
-    MMat rgb45 (ROWS2, COLS2, CV_8UC3, AllocType::splitted);
-    MMat rgb90 (ROWS2, COLS2, CV_8UC3, AllocType::splitted);
-    MMat rgb135 (ROWS2, COLS2, CV_8UC3, AllocType::splitted);
-    MMat mono0(ROWS2, COLS2, CV_8UC1, AllocType::splitted);
-    MMat mono45(ROWS2, COLS2, CV_8UC1, AllocType::splitted);
-    MMat mono90(ROWS2, COLS2, CV_8UC1, AllocType::splitted);
-    MMat mono135(ROWS2, COLS2, CV_8UC1, AllocType::splitted);
+    MMat bggr0 (ROWS2, COLS2, CV_8UC1, ALLOC_TYPE );
+    MMat bggr45 (ROWS2, COLS2, CV_8UC1, ALLOC_TYPE );
+    MMat bggr90 (ROWS2, COLS2, CV_8UC1, ALLOC_TYPE );
+    MMat bggr135 (ROWS2, COLS2, CV_8UC1, ALLOC_TYPE );
 
+    MMat rgb0 (ROWS2, COLS2, CV_8UC3, ALLOC_TYPE);
+    MMat rgb45 (ROWS2, COLS2, CV_8UC3, ALLOC_TYPE);
+    MMat rgb90 (ROWS2, COLS2, CV_8UC3, ALLOC_TYPE);
+    MMat rgb135 (ROWS2, COLS2, CV_8UC3, ALLOC_TYPE);
+    MMat mono0(ROWS2, COLS2, CV_8UC1, ALLOC_TYPE);
+    MMat mono45(ROWS2, COLS2, CV_8UC1, ALLOC_TYPE);
+    MMat mono90(ROWS2, COLS2, CV_8UC1, ALLOC_TYPE);
+    MMat mono135(ROWS2, COLS2, CV_8UC1, ALLOC_TYPE);
 
-    GpuMat dev_stokes(ROWS2, COLS2, CV_16SC3);
-    GpuMat dev_dolp(ROWS2, COLS2, CV_64FC1);
-    GpuMat dev_aolp(ROWS2, COLS2, CV_64FC1);
-    GpuMat dev_hsv(ROWS2, COLS2, CV_8UC3);
+    MMat m_stokes(ROWS2, COLS2, CV_32SC3, ALLOC_TYPE);
 
-    MMat colored (ROWS2, COLS2, CV_8UC3, AllocType::splitted);
+    MMat dolp(ROWS2, COLS2, CV_32FC1, ALLOC_TYPE);
+    MMat aolp(ROWS2, COLS2, CV_32FC1, ALLOC_TYPE);
 
-    Mat stokes;
-    Mat dolp;
-    Mat aolp;
-    Mat hsv;
+    MMat hsv(ROWS2, COLS2, CV_8UC3, ALLOC_TYPE);
+    MMat colored (ROWS2, COLS2, CV_8UC3, ALLOC_TYPE);
+
+    CHECK_LAST_CUDA_ERROR();
 
     for (int i = 0; i < n; i++) {
         // Split
@@ -297,6 +277,8 @@ void benchmark_indiv(const GpuMat & dev_img_raw) {
         dim3 threads(32, 32);
         cudaEventRecord(start, 0);
         my_split<<<blocks, threads>>>(dev_img_raw, bggr0.gpuMat, bggr45.gpuMat, bggr90.gpuMat, bggr135.gpuMat);
+        CHECK_LAST_CUDA_ERROR();
+
         bggr0.download(); bggr45.download(); bggr90.download(); bggr135.download();
         cudaEventRecord(stop, 0);
         cudaEventSynchronize(stop);
@@ -313,19 +295,19 @@ void benchmark_indiv(const GpuMat & dev_img_raw) {
         cuda::cvtColor(bggr45.gpuMat, rgb45.gpuMat, COLOR_BayerBG2BGR, 0, s45);
         cuda::cvtColor(bggr90.gpuMat, rgb90.gpuMat, COLOR_BayerBG2BGR, 0, s90);
         cuda::cvtColor(bggr135.gpuMat, rgb135.gpuMat, COLOR_BayerBG2BGR, 0, s135);
+        rgb0.download(s0); rgb45.download(s45); rgb90.download(s90); rgb135.download(s135);
 
         cuda::cvtColor(rgb0.gpuMat, mono0.gpuMat, COLOR_BGR2GRAY, 0, s0);
         cuda::cvtColor(rgb45.gpuMat, mono45.gpuMat, COLOR_BGR2GRAY, 0, s45);
         cuda::cvtColor(rgb90.gpuMat, mono90.gpuMat, COLOR_BGR2GRAY, 0, s90);
         cuda::cvtColor(rgb135.gpuMat, mono135.gpuMat, COLOR_BGR2GRAY, 0, s135);
+        mono0.download(s0); mono45.download(s45); mono90.download(s90); mono135.download(s135);
 
         s0.waitForCompletion();
         s45.waitForCompletion();
         s90.waitForCompletion();
         s135.waitForCompletion();
 
-        rgb0.download(); rgb45.download(); rgb90.download(); rgb135.download();
-        mono0.download(); mono45.download(); mono90.download(); mono135.download();
         cudaEventRecord(stop, 0);
         cudaEventSynchronize(stop);
         cudaEventElapsedTime(&elapsed_time, start, stop);
@@ -333,10 +315,8 @@ void benchmark_indiv(const GpuMat & dev_img_raw) {
 
         // Stokes
         cudaEventRecord(start, 0);
-        int sdev_stokes = std::ceil((float)dev_stokes.step / sizeof(short3));
-        compute_stokes<<<blocks, threads>>>(mono0.gpuMat, mono45.gpuMat, mono90.gpuMat, mono135.gpuMat,
-             reinterpret_cast<short3*>(dev_stokes.data), sdev_stokes);
-        dev_stokes.download(stokes);
+        compute_stokes<<<blocks, threads>>>(mono0.gpuMat, mono45.gpuMat, mono90.gpuMat, mono135.gpuMat, m_stokes.gpuMat);
+        m_stokes.download();
         cudaEventRecord(stop, 0);
         cudaEventSynchronize(stop);
         cudaEventElapsedTime(&elapsed_time, start, stop);
@@ -348,13 +328,13 @@ void benchmark_indiv(const GpuMat & dev_img_raw) {
         cudaStreamCreate(&saolp);
     
         cudaEventRecord(start, 0);
-        compute_dolp<<<blocks, threads, 0, sdolp>>>(reinterpret_cast<short3*>(dev_stokes.data), sdev_stokes, dev_dolp);
-        compute_aolp<<<blocks, threads, 0, saolp>>>(reinterpret_cast<short3*>(dev_stokes.data), sdev_stokes, dev_aolp);
+        compute_dolp<<<blocks, threads, 0, sdolp>>>(m_stokes.gpuMat, dolp.gpuMat);
+        compute_aolp<<<blocks, threads, 0, saolp>>>(m_stokes.gpuMat, aolp.gpuMat);
 
         cudaStreamDestroy(sdolp);
         cudaStreamDestroy(saolp);
-        dev_dolp.download(dolp);
-        dev_aolp.download(aolp);
+        dolp.download();
+        aolp.download();
         cudaEventRecord(stop, 0);
         cudaEventSynchronize(stop);
         cudaEventElapsedTime(&elapsed_time, start, stop);
@@ -362,42 +342,24 @@ void benchmark_indiv(const GpuMat & dev_img_raw) {
 
         // False coloring
         cudaEventRecord(start, 0);
-        int sdev_hsv = dev_hsv.step;
-        false_coloring<<<blocks, threads>>>(dev_aolp, dev_dolp,
-            reinterpret_cast<unsigned char*>(dev_hsv.data), sdev_hsv
-        );
+        false_coloring<<<blocks, threads>>>(aolp.gpuMat, dolp.gpuMat, hsv.gpuMat);
 
-        cuda::cvtColor(dev_hsv, colored.gpuMat, COLOR_HSV2RGB);
+        cuda::cvtColor(hsv.gpuMat, colored.gpuMat, COLOR_HSV2RGB);
         colored.download();
         cudaEventRecord(stop, 0);
         cudaEventSynchronize(stop);
         cudaEventElapsedTime(&elapsed_time, start, stop);
         t_hsv_rgb += elapsed_time;
-
     }
-    stokes.release();
-    dolp.release();
-    aolp.release();
-    hsv.release();
-
-    rgb0.save_img("rgb0");
-    rgb45.save_img("rgb45");
-    rgb90.save_img("rgb90");
-    rgb135.save_img("rgb135");
-    mono0.save_img("mono0");
-    mono45.save_img("mono45");
-    mono90.save_img("mono90");
-    mono135.save_img("mono135");
 
     colored.save_img("colored");
-
 
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
     std::cout << "Turtlebot, mean over " << n << " runs" << std::endl;
     std::cout << "Host/Device Memory, streams on debayer/mono & aolp/dolp" << std::endl; 
-    std::cout << "Stokes: CV_16SC3, AOLP/DOLP CV_64FC1" << std::endl; 
-    std::cout << "Commit : " << std::endl << std::endl;
+    std::cout << "Stokes: CV_32FC3, AOLP/DOLP: CV_32FC1" << std::endl; 
+    std::cout << "Commit :" << std::endl << std::endl;
     std::cout << "Upload: " << t_upload / n << "ms" << std::endl;
     std::cout << "Split: " << t_split/n << "ms" << std::endl;
     std::cout << "Debayer + mono: " << t_debayer_mono / n << "ms" << std::endl;
@@ -409,13 +371,17 @@ void benchmark_indiv(const GpuMat & dev_img_raw) {
 
 int main()
 {
-    // cudaSetDeviceFlags(cudaDeviceMapHost);
+    cuda::setDevice(0);
 
+    // cudaSetDeviceFlags(cudaDeviceMapHost);
     // Read and upload img to gpu
     Mat img_raw = imread("images/frame00000_raw.png", IMREAD_GRAYSCALE);
+    std::cout << img_raw.type() << std::endl;
     GpuMat dev_img_raw;
     dev_img_raw.upload(img_raw);
+
     benchmark_indiv(dev_img_raw);
+
     dev_img_raw.release();
     img_raw.release();
     return 0;
