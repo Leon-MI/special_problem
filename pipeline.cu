@@ -18,7 +18,7 @@ using namespace cv::cuda;
 #define ROWS2 1024
 #define COLS2 1224
 
-#define ALLOC_TYPE AllocType::unified
+#define ALLOC_TYPE AllocType::splitted
 
 #define CHECK_LAST_CUDA_ERROR() checkLast(__FILE__, __LINE__)
 void checkLast(const char* const file, const int line)
@@ -37,19 +37,22 @@ __global__ void my_split(const cuda::PtrStepSzb dev_img, cuda::PtrStepSzb bggr0,
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     int j = threadIdx.y + blockIdx.y * blockDim.y;
 
-    if (i >= ROWS || j >= COLS) {
+
+    if (i >= ROWS || j >= (COLS / 4 + 1)) {
         return;
     }
+    j = j*2;
+    int jj = j*2;
     if (i%2 == 0) {
-        if (j%2 == 0)
-            bggr90(i/2, j/2) = dev_img(i, j);
-        else
-            bggr45(i/2, (j-1)/2) = dev_img(i, j);
+        bggr90(i/2, j) = dev_img(i, jj);
+        bggr90(i/2, j+1) = dev_img(i, jj+2);
+        bggr45(i/2, j) = dev_img(i, jj+1);
+        bggr45(i/2, j+1) = dev_img(i, jj+3);
     } else {
-        if (j%2 == 0)
-            bggr135((i-1)/2, j/2) = dev_img(i, j);
-        else
-            bggr0((i-1)/2, (j-1)/2) = dev_img(i, j);
+        bggr135((i-1)/2, j) = dev_img(i, jj);
+        bggr135((i-1)/2, j+1) = dev_img(i, jj+2);
+        bggr0((i-1)/2, j) = dev_img(i, jj+1);
+        bggr0((i-1)/2, j+1) = dev_img(i, jj+3);
     }
 }
 
@@ -235,7 +238,7 @@ class MMat {
 
 
 void benchmark_indiv(const GpuMat & dev_img_raw) {
-    const int n = 1;
+    const int n = 50;
     float t_upload = 0.0f;
     float t_split = 0.0f;
     float t_debayer_mono = 0.0f;
@@ -273,7 +276,7 @@ void benchmark_indiv(const GpuMat & dev_img_raw) {
 
     for (int i = 0; i < n; i++) {
         // Split
-        dim3 blocks(64, 77);
+        dim3 blocks(64, 20);
         dim3 threads(32, 32);
         cudaEventRecord(start, 0);
         my_split<<<blocks, threads>>>(dev_img_raw, bggr0.gpuMat, bggr45.gpuMat, bggr90.gpuMat, bggr135.gpuMat);
@@ -357,7 +360,7 @@ void benchmark_indiv(const GpuMat & dev_img_raw) {
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
     std::cout << "Turtlebot, mean over " << n << " runs" << std::endl;
-    std::cout << "Host/Device Memory, streams on debayer/mono & aolp/dolp" << std::endl; 
+    std::cout << "AllocType::unified, streams on debayer/mono & aolp/dolp" << std::endl; 
     std::cout << "Stokes: CV_32FC3, AOLP/DOLP: CV_32FC1" << std::endl; 
     std::cout << "Commit :" << std::endl << std::endl;
     std::cout << "Upload: " << t_upload / n << "ms" << std::endl;
@@ -371,12 +374,10 @@ void benchmark_indiv(const GpuMat & dev_img_raw) {
 
 int main()
 {
-    cuda::setDevice(0);
-
+    // cuda::setDevice(0);
     // cudaSetDeviceFlags(cudaDeviceMapHost);
     // Read and upload img to gpu
     Mat img_raw = imread("images/frame00000_raw.png", IMREAD_GRAYSCALE);
-    std::cout << img_raw.type() << std::endl;
     GpuMat dev_img_raw;
     dev_img_raw.upload(img_raw);
 
