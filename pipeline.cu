@@ -62,7 +62,7 @@ __global__ void compute_stokes(
     const cuda::PtrStepSzb mono45,
     const cuda::PtrStepSzb mono90,
     const cuda::PtrStepSzb mono135,
-    cuda::PtrStep<int3>  output
+    cuda::PtrStep<short3>  output
     ) {
     const int i = threadIdx.x + blockIdx.x * blockDim.x;
     const int j = threadIdx.y + blockIdx.y * blockDim.y;
@@ -73,35 +73,36 @@ __global__ void compute_stokes(
     const unsigned char m0 = mono0(i, j);
     const unsigned char m90 = mono90(i, j);
     
-    output(i, j).x = (int)(m0 + m90);
-    output(i, j).y = (int)(m0 - m90);
-    output(i, j).z = (int)(mono45(i, j) - mono135(i, j));
+    output(i, j).x = m0 + m90;
+    output(i, j).y = m0 - m90;
+    output(i, j).z = mono45(i, j) - mono135(i, j);
 }
 
-__global__ void compute_dolp(const cuda::PtrStep<int3> stokes, cuda::PtrStepSz<float> output) {
-    int i = threadIdx.x + blockIdx.x * blockDim.x;
-    int j = threadIdx.y + blockIdx.y * blockDim.y;
+__global__ void compute_dolp(const cuda::PtrStep<short3> stokes, cuda::PtrStepSz<float> output) {
+    const int i = threadIdx.x + blockIdx.x * blockDim.x;
+    const int j = threadIdx.y + blockIdx.y * blockDim.y;
 
     if (i > (ROWS2-1) || j > (COLS2-1))
         return;
     
-    const int3 s = stokes(i, j);
-    if (s.x == 0)
+    const short3 s = stokes(i, j);
+    if (s.x == (short)0)
         output(i, j) = 0;
-    else
+    else {
         output(i, j) = sqrtf((s.y*s.y) + (s.z*s.z)) / s.x;
+    }
 }
 
 
-__global__ void compute_aolp(const cuda::PtrStep<int3> stokes, cuda::PtrStepSz<float> output) {
-    int i = threadIdx.x + blockIdx.x * blockDim.x;
-    int j = threadIdx.y + blockIdx.y * blockDim.y;
+__global__ void compute_aolp(const cuda::PtrStep<short3> stokes, cuda::PtrStepSz<float> output) {
+    const int i = threadIdx.x + blockIdx.x * blockDim.x;
+    const int j = threadIdx.y + blockIdx.y * blockDim.y;
 
     if (i > (ROWS2-1) || j > (COLS2-1))
         return;
 
-    const int3 s = stokes(i, j);
-    if (s.z == (int)0) {
+    const short3 s = stokes(i, j);
+    if (s.z == (short)0) {
         output(i, j) = 0.0;
     } else {
         const float sy = (float)s.y;
@@ -140,6 +141,8 @@ inline size_t imageFormatSize(size_t width, size_t height, int format)
         s = sizeof(double);
     else if (format == CV_32SC3)
         s = sizeof(int3);
+    else if (format == CV_16SC3)
+        s = sizeof(short3);
 
 	return width * height * s;
 }
@@ -264,7 +267,7 @@ void benchmark_indiv(const GpuMat & dev_img_raw) {
     MMat mono90(ROWS2, COLS2, CV_8UC1, ALLOC_TYPE);
     MMat mono135(ROWS2, COLS2, CV_8UC1, ALLOC_TYPE);
 
-    MMat m_stokes(ROWS2, COLS2, CV_32SC3, ALLOC_TYPE);
+    MMat m_stokes(ROWS2, COLS2, CV_16SC3, ALLOC_TYPE);
 
     MMat dolp(ROWS2, COLS2, CV_32FC1, ALLOC_TYPE);
     MMat aolp(ROWS2, COLS2, CV_32FC1, ALLOC_TYPE);
