@@ -4,7 +4,6 @@
 #include <opencv2/core/cuda.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/cudaimgproc.hpp>
-#include <opencv2/imgcodecs.hpp>
 #include <opencv2/core/utility.hpp>
 #include <cuda_runtime.h>
 #include <fstream>
@@ -57,75 +56,91 @@ __global__ void my_split(const cuda::PtrStepSzb dev_img, cuda::PtrStepSzb bggr0,
 }
 
 
-__global__ void compute_stokes(
+__device__ short3 compute_stokes(
+    const int i,
+    const int j,
     const cuda::PtrStepSzb mono0,
     const cuda::PtrStepSzb mono45,
     const cuda::PtrStepSzb mono90,
     const cuda::PtrStepSzb mono135,
-    cuda::PtrStep<short3>  output
+    cuda::PtrStep<short3>  stokes
+    ) {
+    const unsigned char m0 = mono0(i, j);
+    const unsigned char m90 = mono90(i, j);
+    
+    short3 v_stokes;
+    v_stokes.x = m0 + m90;
+    v_stokes.y = m0 - m90;
+    v_stokes.z = mono45(i, j) - mono135(i, j);
+
+    stokes(i, j) = v_stokes;
+    return v_stokes;
+}
+
+__device__ float compute_dolp(const int i, const int j, const short3 & v_stokes, cuda::PtrStepSz<float> dolp) {
+    float v_dolp;
+    if (v_stokes.x == (short)0)
+        v_dolp = 0;
+    else
+        v_dolp = sqrtf((v_stokes.y*v_stokes.y) + (v_stokes.z*v_stokes.z)) / v_stokes.x;
+    dolp(i, j) = v_dolp;
+    return v_dolp;
+}
+
+__device__ float compute_aolp(const int i, const int j, const short3 & v_stokes, cuda::PtrStepSz<float> aolp) {
+    float v_aolp;
+    if (v_stokes.z == (short)0) {
+        v_aolp = 0.0;
+    } else {
+        const float sy = (float)v_stokes.y;
+        const float sz = (float)v_stokes.z;
+        const float angle = ((float)1/2) * atan2f(sy, sz);
+        v_aolp = angle + (float)CV_PI/2;
+    }
+    aolp(i, j) = v_aolp;
+    return v_aolp;
+}
+
+__device__ uchar3 aolp_dolp_2_hsv(const int i, const int j, const float v_dolp, const float v_aolp, cuda::PtrStep<uchar3> hsv) {
+    uchar3 v_hsv;
+
+    v_hsv.x = (unsigned char) (179 * fmodf(v_aolp, CV_PI) / CV_PI);
+    v_hsv.y = (unsigned char) 255;
+    v_hsv.z = (unsigned char) min(max((float)0, v_dolp*255), (float)255);
+
+    hsv(i, j) = v_hsv;
+    return v_hsv;
+}
+
+
+__global__ void pipeline_end(
+    const cuda::PtrStepSzb mono0,
+    const cuda::PtrStepSzb mono45,
+    const cuda::PtrStepSzb mono90,
+    const cuda::PtrStepSzb mono135,
+    cuda::PtrStep<short3>  stokes,
+    cuda::PtrStepSz<float> dolp,
+    cuda::PtrStepSz<float> aolp,
+    cuda::PtrStep<uchar3>  hsv
     ) {
     const int i = threadIdx.x + blockIdx.x * blockDim.x;
     const int j = threadIdx.y + blockIdx.y * blockDim.y;
 
     if (i > (ROWS2-1) || j > (COLS2-1))
         return;
-
-    const unsigned char m0 = mono0(i, j);
-    const unsigned char m90 = mono90(i, j);
     
-    output(i, j).x = m0 + m90;
-    output(i, j).y = m0 - m90;
-    output(i, j).z = mono45(i, j) - mono135(i, j);
+    const short3 v_stokes = compute_stokes(
+        i, j,
+        mono0, mono45, mono90, mono135, stokes
+    );
+
+    const float v_dolp = compute_dolp(i, j, v_stokes, dolp);
+    const float v_aolp = compute_dolp(i, j, v_stokes, aolp);
+
+    // False coloring
+    const uchar3 v_hsv = aolp_dolp_2_hsv(i, j, v_dolp, v_aolp, hsv);
 }
 
-__global__ void compute_dolp(const cuda::PtrStep<short3> stokes, cuda::PtrStepSz<float> output) {
-    const int i = threadIdx.x + blockIdx.x * blockDim.x;
-    const int j = threadIdx.y + blockIdx.y * blockDim.y;
-
-    if (i > (ROWS2-1) || j > (COLS2-1))
-        return;
-    
-    const short3 s = stokes(i, j);
-    if (s.x == (short)0)
-        output(i, j) = 0;
-    else {
-        output(i, j) = sqrtf((s.y*s.y) + (s.z*s.z)) / s.x;
-    }
-}
-
-
-__global__ void compute_aolp(const cuda::PtrStep<short3> stokes, cuda::PtrStepSz<float> output) {
-    const int i = threadIdx.x + blockIdx.x * blockDim.x;
-    const int j = threadIdx.y + blockIdx.y * blockDim.y;
-
-    if (i > (ROWS2-1) || j > (COLS2-1))
-        return;
-
-    const short3 s = stokes(i, j);
-    if (s.z == (short)0) {
-        output(i, j) = 0.0;
-    } else {
-        const float sy = (float)s.y;
-        const float sz = (float)s.z;
-        const float angle = ((float)1/2) * atan2f(sy, sz);
-        output(i, j) = angle + (float)CV_PI/2;
-    }
-}
-
-__global__ void false_coloring(const cuda::PtrStepSz<float> aolp, cuda::PtrStepSz<float> dolp, cuda::PtrStep<uchar3> output) {
-    int i = threadIdx.x + blockIdx.x * blockDim.x;
-    int j = threadIdx.y + blockIdx.y * blockDim.y;
-
-    if (i > (ROWS2-1) || j > (COLS2-1))
-        return;
-
-    const float a = aolp(i, j);
-    const float d = dolp(i, j) * 255;
-
-    output(i, j).x = (unsigned char) (179 * fmodf(a, CV_PI) / CV_PI);
-    output(i, j).y = (unsigned char) 255;
-    output(i, j).z = (unsigned char) min(max((double)0, d), (double)255);
-}
 
 
 inline size_t imageFormatSize(size_t width, size_t height, int format)
@@ -241,13 +256,14 @@ class MMat {
 
 
 void benchmark_indiv(const GpuMat & dev_img_raw) {
-    const int n = 50;
+    int n = 51;
     float t_upload = 0.0f;
     float t_split = 0.0f;
     float t_debayer_mono = 0.0f;
     float t_stokes = 0.0f;
     float t_aolp_dolp = 0.0f;
     float t_hsv_rgb = 0.0f;
+    float t_pipeline_end = 0.0f;
     float elapsed_time;
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
@@ -278,6 +294,17 @@ void benchmark_indiv(const GpuMat & dev_img_raw) {
     CHECK_LAST_CUDA_ERROR();
 
     for (int i = 0; i < n; i++) {
+        if (i == 1) {
+            std::cout << "First round done" << std::endl;
+            // Kernel have been compiled, reset timers
+            t_upload = 0.0f;
+            t_split = 0.0f;
+            t_debayer_mono = 0.0f;
+            t_stokes = 0.0f;
+            t_aolp_dolp = 0.0f;
+            t_hsv_rgb = 0.0f;
+            t_pipeline_end = 0.0f;
+        }
         // Split
         dim3 blocks(64, 20);
         dim3 threads(32, 32);
@@ -319,60 +346,36 @@ void benchmark_indiv(const GpuMat & dev_img_raw) {
         cudaEventElapsedTime(&elapsed_time, start, stop);
         t_debayer_mono += elapsed_time;
 
-        // Stokes
+        // End of pipeline: stokes + aolp + dolp + false coloring
         cudaEventRecord(start, 0);
-        compute_stokes<<<blocks, threads>>>(mono0.gpuMat, mono45.gpuMat, mono90.gpuMat, mono135.gpuMat, m_stokes.gpuMat);
+        pipeline_end<<<blocks, threads>>>(mono0.gpuMat, mono45.gpuMat, mono90.gpuMat, mono135.gpuMat, m_stokes.gpuMat, dolp.gpuMat, aolp.gpuMat, hsv.gpuMat);
+
         m_stokes.download();
-        cudaEventRecord(stop, 0);
-        cudaEventSynchronize(stop);
-        cudaEventElapsedTime(&elapsed_time, start, stop);
-        t_stokes += elapsed_time;
-
-        // Dolp + Aolp
-        cudaStream_t sdolp, saolp; 
-        cudaStreamCreate(&sdolp);
-        cudaStreamCreate(&saolp);
-    
-        cudaEventRecord(start, 0);
-        compute_dolp<<<blocks, threads, 0, sdolp>>>(m_stokes.gpuMat, dolp.gpuMat);
-        compute_aolp<<<blocks, threads, 0, saolp>>>(m_stokes.gpuMat, aolp.gpuMat);
-
-        cudaStreamDestroy(sdolp);
-        cudaStreamDestroy(saolp);
         dolp.download();
         aolp.download();
-        cudaEventRecord(stop, 0);
-        cudaEventSynchronize(stop);
-        cudaEventElapsedTime(&elapsed_time, start, stop);
-        t_aolp_dolp += elapsed_time;
-
-        // False coloring
-        cudaEventRecord(start, 0);
-        false_coloring<<<blocks, threads>>>(aolp.gpuMat, dolp.gpuMat, hsv.gpuMat);
 
         cuda::cvtColor(hsv.gpuMat, colored.gpuMat, COLOR_HSV2RGB);
         colored.download();
         cudaEventRecord(stop, 0);
         cudaEventSynchronize(stop);
         cudaEventElapsedTime(&elapsed_time, start, stop);
-        t_hsv_rgb += elapsed_time;
+        t_pipeline_end += elapsed_time;
     }
 
     colored.save_img("colored");
 
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
-    std::cout << "Turtlebot, mean over " << n << " runs" << std::endl;
-    std::cout << "AllocType::unified, streams on debayer/mono & aolp/dolp" << std::endl; 
-    std::cout << "Stokes: CV_32FC3, AOLP/DOLP: CV_32FC1" << std::endl; 
+    n -= 1;
+    std::cout << "Xavier, mean over " << n << " runs" << std::endl;
+    std::cout << "AllocType::splitted, streams on debayer/mono" << std::endl; 
+    std::cout << "Stokes: CV_16SC3, AOLP/DOLP: CV_32FC1" << std::endl; 
     std::cout << "Commit :" << std::endl << std::endl;
     std::cout << "Upload: " << t_upload / n << "ms" << std::endl;
     std::cout << "Split: " << t_split/n << "ms" << std::endl;
     std::cout << "Debayer + mono: " << t_debayer_mono / n << "ms" << std::endl;
-    std::cout << "Stokes: " << t_stokes / n << "ms" << std::endl;
-    std::cout << "Aolp + Dolp: " << t_aolp_dolp / n << "ms" << std::endl;
-    std::cout << "False coloring: " << t_hsv_rgb / n << "ms" << std::endl;
-    std::cout << "Total: " << (t_upload + t_split + t_debayer_mono + t_stokes + t_aolp_dolp + t_hsv_rgb) / n << "ms" << std::endl; 
+    std::cout << "Stokes + Aolp + Dolp + False coloring: " << t_pipeline_end / n << "ms" << std::endl;
+    std::cout << "Total: " << (t_upload + t_split + t_debayer_mono + t_pipeline_end) / n << "ms" << std::endl; 
 }
 
 int main()
