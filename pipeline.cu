@@ -56,7 +56,7 @@ __global__ void my_split(const cuda::PtrStepSzb dev_img, cuda::PtrStepSzb bggr0,
 }
 
 
-__device__ short3 compute_stokes(
+inline __device__ short3 compute_stokes(
     const int i,
     const int j,
     const cuda::PtrStepSzb mono0,
@@ -77,7 +77,7 @@ __device__ short3 compute_stokes(
     return v_stokes;
 }
 
-__device__ float compute_dolp(const int i, const int j, const short3 & v_stokes, cuda::PtrStepSz<float> dolp) {
+inline __device__ float compute_dolp(const int i, const int j, const short3 & v_stokes, cuda::PtrStepSz<float> dolp) {
     float v_dolp;
     if (v_stokes.x == (short)0)
         v_dolp = 0;
@@ -87,7 +87,7 @@ __device__ float compute_dolp(const int i, const int j, const short3 & v_stokes,
     return v_dolp;
 }
 
-__device__ float compute_aolp(const int i, const int j, const short3 & v_stokes, cuda::PtrStepSz<float> aolp) {
+inline __device__ float compute_aolp(const int i, const int j, const short3 & v_stokes, cuda::PtrStepSz<float> aolp) {
     float v_aolp;
     if (v_stokes.z == (short)0) {
         v_aolp = 0.0;
@@ -101,7 +101,7 @@ __device__ float compute_aolp(const int i, const int j, const short3 & v_stokes,
     return v_aolp;
 }
 
-__device__ uchar3 aolp_dolp_2_hsv(const int i, const int j, const float v_dolp, const float v_aolp, cuda::PtrStep<uchar3> hsv) {
+inline __device__ uchar3 aolp_dolp_2_hsv(const int i, const int j, const float v_dolp, const float v_aolp, cuda::PtrStep<uchar3> hsv) {
     uchar3 v_hsv;
 
     v_hsv.x = (unsigned char) (179 * fmodf(v_aolp, CV_PI) / CV_PI);
