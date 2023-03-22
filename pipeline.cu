@@ -135,7 +135,7 @@ __global__ void pipeline_end(
     );
 
     const float v_dolp = compute_dolp(i, j, v_stokes, dolp);
-    const float v_aolp = compute_dolp(i, j, v_stokes, aolp);
+    const float v_aolp = compute_aolp(i, j, v_stokes, aolp);
 
     // False coloring
     const uchar3 v_hsv = aolp_dolp_2_hsv(i, j, v_dolp, v_aolp, hsv);
